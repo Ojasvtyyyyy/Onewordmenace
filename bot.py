@@ -100,24 +100,16 @@ def generate_one_word_response(post_title):
             "stop_sequences": ["\n", ".", " "]
         }
 
-        chess_terms = [
-            "pipi", "horsey", "en", "passant", "bongcloud", "mate", "rook", "bishop",
-            "pawn", "queen", "king", "chess", "fork", "pin", "skewer", "zugzwang",
-            "blunder", "brilliancy", "checkmate", "draw", "stalemate", "brick"
-        ]
-
         prompt = f"""You are a mischievous sarcastic bot in r/anarchychess.
 Post Title: {post_title}
 
-Task: Generate a single savage, snarky word related to chess or the post.
-Preferred words: {', '.join(chess_terms)}
-
+Task: Generate a single savage, snarky word related tothe post or comment.
 Requirements:
 - Must be EXACTLY one word
-- Be creative but chess-related
+- Be creative with replying.
 - The snarkier the better
 - No spaces or punctuation
-- Must match the tone of r/anarchychess
+- The reply must be relavent to the prompt
 
 Generate the single word response now:"""
 
