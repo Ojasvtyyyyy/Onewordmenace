@@ -2,6 +2,22 @@ import praw
 import google.generativeai as genai
 import os
 from dotenv import load_dotenv
+from flask import Flask
+import logging
+from threading import Thread
+import sys
+from pymongo import MongoClient
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
+
+# Initialize Flask
+app = Flask(__name__)
 
 load_dotenv()
 
@@ -12,6 +28,13 @@ REFRESH_TOKEN = os.getenv('REFRESH_TOKEN')
 USER_AGENT = 'OneWordMenace Bot 1.0'
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 SUBREDDIT_NAME = 'anarchychess'
+PORT = int(os.getenv('PORT', 10000))
+MONGODB_URI = os.getenv('MONGODB_URI')
+
+# Configure MongoDB
+client = MongoClient(MONGODB_URI)
+db = client.bot_database
+processed_ids_collection = db.processed_ids
 
 # Configure Gemini
 genai.configure(api_key=GEMINI_API_KEY)
@@ -52,35 +75,42 @@ def generate_one_word_response(context):
     Generate only the word, nothing else.
     """
 
-    response = model.generate_content(
-        prompt,
-        generation_config=generation_config,
-        safety_settings=[]  # No safety settings
-    )
-    
-    # Ensure we get exactly one word
-    word = response.text.strip().split()[0]
-    return word
+    try:
+        response = model.generate_content(
+            prompt,
+            generation_config=generation_config,
+            safety_settings=[]
+        )
+        word = response.text.strip().split()[0]
+        return word
+    except Exception as e:
+        logger.error(f"Error generating response: {e}")
+        return "pipi"
 
 def load_processed_ids():
     try:
-        with open('processed_ids.txt', 'r') as f:
-            ids = f.read().splitlines()
-            processed_submissions.update(ids)
-    except FileNotFoundError:
-        pass
+        for doc in processed_ids_collection.find({}, {'submission_id': 1}):
+            processed_submissions.add(doc['submission_id'])
+        logger.info(f"Loaded {len(processed_submissions)} processed IDs")
+    except Exception as e:
+        logger.error(f"Error loading processed IDs: {e}")
 
 def save_processed_id(item_id):
-    processed_submissions.add(item_id)
-    with open('processed_ids.txt', 'a') as f:
-        f.write(f"{item_id}\n")
+    try:
+        processed_submissions.add(item_id)
+        processed_ids_collection.update_one(
+            {'submission_id': item_id},
+            {'$set': {'submission_id': item_id}},
+            upsert=True
+        )
+        logger.info(f"Saved new ID: {item_id}")
+    except Exception as e:
+        logger.error(f"Error saving processed ID: {e}")
 
 def has_already_commented(submission):
-    # Check if we've processed this submission before
     if submission.id in processed_submissions:
         return True
 
-    # Check comments directly
     submission.comments.replace_more(limit=0)
     for comment in submission.comments:
         if comment.author and comment.author.name == submission.reddit.user.me().name:
@@ -90,11 +120,9 @@ def has_already_commented(submission):
     return False
 
 def has_already_replied(comment):
-    # Check if we've processed this comment before
     if comment.id in processed_comments:
         return True
 
-    # Check replies directly
     comment.refresh()
     for reply in comment.replies:
         if reply.author and reply.author.name == comment.reddit.user.me().name:
@@ -115,50 +143,59 @@ def run_bot():
     reddit = init_reddit()
     subreddit = reddit.subreddit(SUBREDDIT_NAME)
     
-    # Load previously processed IDs
     load_processed_ids()
     
     signature = "\n\n^(Automated)"
     
+    logger.info("Bot started successfully")
+    
     for submission in subreddit.stream.submissions():
         try:
-            # Comment on new posts
             if not has_already_commented(submission):
                 response = generate_one_word_response(submission.title)
                 submission.reply(response + signature)
                 save_processed_id(submission.id)
-                print(f"Commented '{response}' on post: {submission.title}")
+                logger.info(f"Commented '{response}' on post: {submission.title}")
 
-            # Handle all comments recursively
             submission.comments.replace_more(limit=None)
             
             def process_replies(comment):
-                # Skip if comment is from a bot or blocked user
                 if not should_reply_to_comment(comment):
                     return
                     
-                # If we haven't replied to this comment yet
                 if not has_already_replied(comment):
                     context = f"{submission.title} - {comment.body}"
                     response = generate_one_word_response(context)
                     comment.reply(response + signature)
                     processed_comments.add(comment.id)
-                    print(f"Replied '{response}' to comment: {comment.body}")
+                    logger.info(f"Replied '{response}' to comment: {comment.body}")
                 
-                # Process all replies to this comment
                 comment.refresh()
                 for reply in comment.replies:
                     process_replies(reply)
             
-            # Start processing from our top-level comments
             for comment in submission.comments:
                 if comment.author and comment.author.name == reddit.user.me().name:
                     for reply in comment.replies:
                         process_replies(reply)
                             
         except Exception as e:
-            print(f"Error occurred: {e}")
+            logger.error(f"Error processing submission: {e}")
             continue
 
+@app.route('/health')
+def health_check():
+    return {'status': 'healthy', 'message': 'Bot is running'}, 200
+
+@app.route('/')
+def home():
+    return {'status': 'online', 'message': 'OneWordMenace Bot'}, 200
+
+def start_bot():
+    thread = Thread(target=run_bot)
+    thread.daemon = True
+    thread.start()
+
 if __name__ == '__main__':
-    run_bot()
+    start_bot()
+    app.run(host='0.0.0.0', port=PORT)
