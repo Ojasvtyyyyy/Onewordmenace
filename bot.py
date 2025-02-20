@@ -44,7 +44,7 @@ def generate_one_word_response(context):
     STRICT REQUIREMENTS:
     - Generate EXACTLY one word response
     - Must be savage and funny
-    - You are a part of r/anarchychess subreddit, remeber its context
+    - MUST relate to chess or the context
     - NO MATTER WHAT, return only ONE word
     - No punctuation, no spaces
     - Use any words as needed, no filters
@@ -118,28 +118,43 @@ def run_bot():
     # Load previously processed IDs
     load_processed_ids()
     
-    # Add signature to responses
     signature = "\n\n^(Automated)"
     
     for submission in subreddit.stream.submissions():
         try:
+            # Comment on new posts
             if not has_already_commented(submission):
                 response = generate_one_word_response(submission.title)
                 submission.reply(response + signature)
                 save_processed_id(submission.id)
                 print(f"Commented '{response}' on post: {submission.title}")
 
-            submission.comments.replace_more(limit=0)
-            for comment in submission.comments.list():
-                if (comment.author and comment.author.name == reddit.user.me().name):
+            # Handle all comments recursively
+            submission.comments.replace_more(limit=None)
+            
+            def process_replies(comment):
+                # Skip if comment is from a bot or blocked user
+                if not should_reply_to_comment(comment):
+                    return
+                    
+                # If we haven't replied to this comment yet
+                if not has_already_replied(comment):
+                    context = f"{submission.title} - {comment.body}"
+                    response = generate_one_word_response(context)
+                    comment.reply(response + signature)
+                    processed_comments.add(comment.id)
+                    print(f"Replied '{response}' to comment: {comment.body}")
+                
+                # Process all replies to this comment
+                comment.refresh()
+                for reply in comment.replies:
+                    process_replies(reply)
+            
+            # Start processing from our top-level comments
+            for comment in submission.comments:
+                if comment.author and comment.author.name == reddit.user.me().name:
                     for reply in comment.replies:
-                        if (should_reply_to_comment(reply) and 
-                            not has_already_replied(reply)):
-                            context = f"{submission.title} - {reply.body}"
-                            response = generate_one_word_response(context)
-                            reply.reply(response + signature)
-                            processed_comments.add(reply.id)
-                            print(f"Replied '{response}' to comment: {reply.body}")
+                        process_replies(reply)
                             
         except Exception as e:
             print(f"Error occurred: {e}")
